@@ -7,66 +7,54 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.colors import LinearSegmentedColormap
 
-def honesty_function_dataset(data_path: str, tokenizer: PreTrainedTokenizer, user_tag: str = "", assistant_tag: str = "", seed: int = 0) -> (list, list):
+def privacy_function_dataset(data_path: str, tokenizer: PreTrainedTokenizer, user_tag: str = "", assistant_tag: str = "", seed: int = 0):
     """
-    Processes data to create training and testing datasets based on honesty.
+    Processes privacy/secrecy data to create training and testing datasets.
 
     Args:
     - data_path (str): Path to the CSV containing the data.
     - tokenizer (PreTrainedTokenizer): Tokenizer to tokenize statements.
-    - user_tag (str): Instruction template.
-    - assistant_tag (str): Instruction template user tag.
+    - user_tag (str): Optional prefix.
+    - assistant_tag (str): Optional suffix.
     - seed (int): Random seed for reproducibility.
 
     Returns:
-    - Tuple containing train and test data.
+    - Dict containing train and test data.
     """
-
-    # Setting the seed for reproducibility
     random.seed(seed)
-
-    # Load the data
     df = pd.read_csv(data_path)
-    true_statements = df[df['label'] == 1]['statement'].values.tolist()
-    false_statements = df[df['label'] == 0]['statement'].values.tolist()
+    # Map label 0 to "private" and label 1 to "unprivate"
+    private_statements = df[df['label'] == 0]['statement'].tolist()
+    unprivate_statements = df[df['label'] == 1]['statement'].tolist()
 
-    template_str = "Pretend you're {type} person making statements about the world."
-    honest_statements = []
-    untruthful_statements = []
+    # Pair up as many as possible
+    n = min(len(private_statements), len(unprivate_statements))
+    private_statements = private_statements[:n]
+    unprivate_statements = unprivate_statements[:n]
 
-    # Process statements
-    for statement in true_statements:
-        tokens = tokenizer.tokenize(statement)
-        
-        for idx in range(1, len(tokens) - 5):
-            truncated_tokens = tokens[:idx]
-            truncated_statement = tokenizer.convert_tokens_to_string(truncated_tokens)
+    # Optionally add tags
+    private_statements = [f"{user_tag} {s} {assistant_tag}".strip() for s in private_statements]
+    unprivate_statements = [f"{user_tag} {s} {assistant_tag}".strip() for s in unprivate_statements]
 
-            honest_statements.append(f"{user_tag} {template_str.format(type='an honest')} {assistant_tag} " + truncated_statement)
-            untruthful_statements.append(f"{user_tag} {template_str.format(type='an untruthful')} {assistant_tag} " + truncated_statement)
-
-    # Create training data
-    ntrain = 512
-    combined_data = [[honest, untruthful] for honest, untruthful in zip(honest_statements, untruthful_statements)]
-    train_data = combined_data[:ntrain]
-
+    # Create pairs for training
+    combined_data = [[p, u] for p, u in zip(private_statements, unprivate_statements)]
+    train_data = combined_data
     train_labels = []
     for d in train_data:
         true_s = d[0]
         random.shuffle(d)
         train_labels.append([s == true_s for s in d])
-    
     train_data = np.concatenate(train_data).tolist()
 
-    # Create test data
-    reshaped_data = np.array([[honest, untruthful] for honest, untruthful in zip(honest_statements[:-1], untruthful_statements[1:])]).flatten()
-    test_data = reshaped_data[ntrain:ntrain*2].tolist()
+    # For test, use the next n pairs offset by 1
+    reshaped_data = np.array([[p, u] for p, u in zip(private_statements[:-1], unprivate_statements[1:])]).flatten()
+    test_data = reshaped_data[:2*n].tolist()
 
     print(f"Train data: {len(train_data)}")
     print(f"Test data: {len(test_data)}")
 
     return {
-        'train': {'data': train_data, 'labels': train_labels},
+        'train': {'data': train_data, 'labels': train_labels, 'private': private_statements, 'unprivate': unprivate_statements},
         'test': {'data': test_data, 'labels': [[1,0]] * len(test_data)}
     }
 
@@ -177,89 +165,39 @@ def plot_detection_results(input_ids, rep_reader_scores_dict, THRESHOLD, start_a
         iter += 1
 
 
-# def plot_lat_scans(input_ids, rep_reader_scores_dict, layer_slice):
-#     for rep, scores in rep_reader_scores_dict.items():
-
-#         start_tok = input_ids.index('▁A')
-#         print(start_tok, np.array(scores).shape)
-#         standardized_scores = np.array(scores)[start_tok:start_tok+40,layer_slice]
-#         # print(standardized_scores.shape)
-
-#         bound = np.mean(standardized_scores) + np.std(standardized_scores)
-#         bound = 2.3
-
-#         # standardized_scores = np.array(scores)
-        
-#         threshold = 0
-#         standardized_scores[np.abs(standardized_scores) < threshold] = 1
-#         standardized_scores = standardized_scores.clip(-bound, bound)
-        
-#         cmap = 'coolwarm'
-
-#         fig, ax = plt.subplots(figsize=(5, 4), dpi=200)
-#         sns.heatmap(-standardized_scores.T, cmap=cmap, linewidth=0.5, annot=False, fmt=".3f", vmin=-bound, vmax=bound)
-#         ax.tick_params(axis='y', rotation=0)
-
-#         ax.set_xlabel("Token Position")#, fontsize=20)
-#         ax.set_ylabel("Layer")#, fontsize=20)
-
-#         # x label appear every 5 ticks
-
-#         ax.set_xticks(np.arange(0, len(standardized_scores), 5)[1:])
-#         ax.set_xticklabels(np.arange(0, len(standardized_scores), 5)[1:])#, fontsize=20)
-#         ax.tick_params(axis='x', rotation=0)
-
-#         ax.set_yticks(np.arange(0, len(standardized_scores[0]), 5)[1:])
-#         ax.set_yticklabels(np.arange(20, len(standardized_scores[0])+20, 5)[::-1][1:])#, fontsize=20)
-#         ax.set_title("LAT Neural Activity")#, fontsize=30)
-#     plt.show()
-
-
 def plot_lat_scans(input_ids, rep_reader_scores_dict, layer_slice):
     for rep, scores in rep_reader_scores_dict.items():
 
-        # Safe lookup for '▁A'
-        try:
-            start_tok = input_ids.index('▁A')
-        except ValueError:
-            print(f"Warning: '▁A' not found in input_ids for rep '{rep}'. Skipping.")
-            continue
-
-        print("Start token index:", start_tok)
-        score_array = np.array(scores)
-        print("Shape before slicing:", score_array.shape)
-
-        # Defensive slice check
-        if start_tok + 40 > score_array.shape[0]:
-            print(f"Warning: Not enough tokens after '▁A' for rep '{rep}'. Skipping.")
-            continue
-
-        standardized_scores = score_array[start_tok:start_tok+40, layer_slice]
-        print("Shape after slicing:", standardized_scores.shape)
+        start_tok = input_ids.index('▁A')
+        print(start_tok, np.array(scores).shape)
+        standardized_scores = np.array(scores)[start_tok:start_tok+40,layer_slice]
+        # print(standardized_scores.shape)
 
         bound = np.mean(standardized_scores) + np.std(standardized_scores)
-        bound = 2.3  # manually overriding bound for consistency
+        bound = 2.3
 
-        # Apply thresholding and clipping
+        # standardized_scores = np.array(scores)
+        
         threshold = 0
         standardized_scores[np.abs(standardized_scores) < threshold] = 1
         standardized_scores = standardized_scores.clip(-bound, bound)
-
-        # Plotting
+        
         cmap = 'coolwarm'
+
         fig, ax = plt.subplots(figsize=(5, 4), dpi=200)
-        sns.heatmap(-standardized_scores.T, cmap=cmap, linewidth=0.5, annot=False,
-                    fmt=".3f", vmin=-bound, vmax=bound)
+        sns.heatmap(-standardized_scores.T, cmap=cmap, linewidth=0.5, annot=False, fmt=".3f", vmin=-bound, vmax=bound)
         ax.tick_params(axis='y', rotation=0)
 
-        ax.set_xlabel("Token Position")
-        ax.set_ylabel("Layer")
+        ax.set_xlabel("Token Position")#, fontsize=20)
+        ax.set_ylabel("Layer")#, fontsize=20)
+
+        # x label appear every 5 ticks
+
         ax.set_xticks(np.arange(0, len(standardized_scores), 5)[1:])
-        ax.set_xticklabels(np.arange(0, len(standardized_scores), 5)[1:])
+        ax.set_xticklabels(np.arange(0, len(standardized_scores), 5)[1:])#, fontsize=20)
         ax.tick_params(axis='x', rotation=0)
 
-        ax.set_yticks(np.arange(0, standardized_scores.shape[1], 5)[1:])
-        ax.set_yticklabels(np.arange(20, 20 + standardized_scores.shape[1], 5)[::-1][1:])
-        ax.set_title("LAT Neural Activity")
-
+        ax.set_yticks(np.arange(0, len(standardized_scores[0]), 5)[1:])
+        ax.set_yticklabels(np.arange(20, len(standardized_scores[0])+20, 5)[::-1][1:])#, fontsize=20)
+        ax.set_title("LAT Neural Activity")#, fontsize=30)
     plt.show()
